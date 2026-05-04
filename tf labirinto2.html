@@ -619,7 +619,9 @@ function canMove(dx, dy) {
   return (playerX + dx >= 0 && playerX + dx < cols && playerY + dy >= 0 && playerY + dy < rows);
 }
 
-function movePlayer(dx, dy) {
+function movePlayer(dx, dy, options = {}) {
+  const { showCollisionFeedback = true } = options;
+
   if (!gameActive) return;
 
   const nextDirection = normalizeDirection(dx, dy);
@@ -641,7 +643,9 @@ function movePlayer(dx, dy) {
   }
 
   lastMoveTime = now;
-  triggerCollisionFeedback(now);
+  if (showCollisionFeedback) {
+    triggerCollisionFeedback(now);
+  }
 }
 
 function checkGoal() {
@@ -784,13 +788,16 @@ function restartLevel() {
 function gameLoop() {
   if (gameActive) {
     currentLevelTime = (Date.now() - startTime) / 1000;
-    let { dx, dy } = getKeyboardDirection();
+    const keyboardDirection = getKeyboardDirection();
 
-    if (sensorsOk && !dx && !dy) {
-      ({ dx, dy } = getTiltDirection());
+    if (keyboardDirection.dx || keyboardDirection.dy) {
+      movePlayer(keyboardDirection.dx, keyboardDirection.dy);
+    } else if (sensorsOk) {
+      const tiltDirection = getTiltDirection();
+      if (tiltDirection.dx || tiltDirection.dy) {
+        movePlayer(tiltDirection.dx, tiltDirection.dy, { showCollisionFeedback: false });
+      }
     }
-
-    if (dx || dy) movePlayer(dx, dy);
   }
 
   updateHud();
