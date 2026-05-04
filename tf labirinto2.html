@@ -32,7 +32,7 @@
     #hud .icon { font-size: 18px; }
 
     /* ── Canvas ── */
-    #gameCanvas { display: block; position: absolute; top: 0; left: 0; }
+    #gameCanvas { display: block; position: absolute; top: 0; left: 0; pointer-events: none; }
 
     /* ── Overlays ── */
     .overlay {
@@ -67,6 +67,7 @@
       background: #e67e22;
       border: none; border-radius: 10px;
       cursor: pointer;
+      touch-action: manipulation;
       box-shadow: 0 4px 16px rgba(230,126,34,.4);
       transition: transform .1s;
     }
@@ -118,14 +119,14 @@
 <div id="startOverlay" class="overlay">
   <h1>🚛 Transportes Figueiredo</h1>
   <p>Arrasta o dedo no ecrã ou inclina o telemóvel para guiar o camião até ao galpão.</p>
-  <button class="btn" id="startBtn">🎮 COMEÇAR ENTREGA</button>
+  <button class="btn" id="startBtn" type="button">🎮 COMEÇAR ENTREGA</button>
 </div>
 
 <div id="missionOverlay" class="overlay hidden">
   <h1>✅ Missão Cumprida!</h1>
   <div class="mission-score" id="missionPts">+100</div>
   <div class="mission-bonus" id="missionBonus">Bónus de tempo: +50</div>
-  <button class="btn" id="nextBtn">Próximo Nível ➜</button>
+  <button class="btn" id="nextBtn" type="button">Próximo Nível ➜</button>
 </div>
 
 <div id="controlHint">Desktop: ⬆⬇⬅➜ | Mobile: Swipe ou inclinação</div>
@@ -163,6 +164,8 @@ let tiltGamma    = 0;
 let tiltBeta     = 0;
 let gameActive   = false;
 let sensorsOk    = false;
+let hasGameStarted = false;
+let gameLoopStarted = false;
 
 // ── Touch State ──
 let touchStartX = 0, touchStartY = 0;
@@ -490,6 +493,27 @@ function initSensors() {
   }
 }
 
+function startGame(event) {
+  if (event) {
+    event.preventDefault();
+  }
+
+  if (hasGameStarted) {
+    return;
+  }
+
+  hasGameStarted = true;
+  canvas.style.pointerEvents = 'auto';
+  initSensors();
+  startOverlay.classList.add('hidden');
+  startLevel();
+
+  if (!gameLoopStarted) {
+    gameLoopStarted = true;
+    gameLoop();
+  }
+}
+
 // Game Loop (para teclado e sensores)
 function gameLoop() {
   if (gameActive) {
@@ -529,14 +553,19 @@ function startLevel() {
   updateControlHint();
 }
 
-startBtn.addEventListener('click', () => {
-  if (!window.isSecureContext) {
-    alert('⚠️ Para usar os sensores de inclinação, este ficheiro deve ser servido via HTTPS.\nOs controlos por toque funcionarão na mesma!');
+startBtn.addEventListener('click', startGame);
+startBtn.addEventListener('pointerdown', startGame);
+startBtn.addEventListener('touchstart', startGame, { passive: false });
+startOverlay.addEventListener('pointerdown', startGame);
+startOverlay.addEventListener('touchstart', startGame, { passive: false });
+window.addEventListener('keydown', (event) => {
+  if (startOverlay.classList.contains('hidden')) {
+    return;
   }
-  initSensors();
-  startOverlay.classList.add('hidden');
-  startLevel();
-  gameLoop();
+
+  if (event.key === 'Enter' || event.key === ' ') {
+    startGame(event);
+  }
 });
 
 nextBtn.addEventListener('click', () => { level++; startLevel(); });
