@@ -20,6 +20,8 @@
     #hud {
       position: fixed; top: 0; left: 0; right: 0;
       display: flex; justify-content: space-between; align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
       padding: calc(12px + env(safe-area-inset-top)) 18px 12px;
       background: rgba(0,0,0,.6);
       color: #ecf0f1;
@@ -28,8 +30,26 @@
       backdrop-filter: blur(6px);
       -webkit-backdrop-filter: blur(6px);
     }
+    .hud-group {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      flex-wrap: wrap;
+    }
     #hud span { display: flex; align-items: center; gap: 6px; }
     #hud .icon { font-size: 18px; }
+    .hud-btn {
+      padding: 8px 12px;
+      border: 0;
+      border-radius: 999px;
+      background: rgba(230,126,34,.18);
+      color: #f6c38b;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      touch-action: manipulation;
+    }
+    .hud-btn:active { transform: scale(.97); }
 
     /* ── Canvas ── */
     #gameCanvas { display: block; position: absolute; top: 0; left: 0; pointer-events: none; }
@@ -93,9 +113,14 @@
 
     @media (max-width: 480px) {
       #hud {
+        justify-content: center;
         padding-left: 12px;
         padding-right: 12px;
         font-size: 14px;
+      }
+
+      .hud-group {
+        justify-content: center;
       }
 
       .overlay h1 { font-size: 22px; }
@@ -110,8 +135,15 @@
 <body>
 
 <div id="hud">
-  <span><span class="icon">📦</span> Nível <b id="levelDisplay">1</b></span>
-  <span><span class="icon">⭐</span> <b id="scoreDisplay">0</b> pts</span>
+  <div class="hud-group">
+    <span><span class="icon">📦</span> Nível <b id="levelDisplay">1</b></span>
+    <span><span class="icon">⭐</span> <b id="scoreDisplay">0</b> pts</span>
+  </div>
+  <div class="hud-group">
+    <span><span class="icon">⏱</span> <b id="timerDisplay">0.0s</b></span>
+    <span><span class="icon">🏆</span> <b id="bestDisplay">0</b></span>
+    <button class="hud-btn" id="restartBtn" type="button">↻ Nível</button>
+  </div>
 </div>
 
 <canvas id="gameCanvas"></canvas>
@@ -145,8 +177,13 @@ const PLAYER_COLOR = '#e67e22';
 const PLAYER_DIR_COLOR = '#d35400';
 const THRESHOLD    = 10;   // inclinação mínima (graus)
 const SWIPE_THRESH = 25;   // swipe mínimo (px)
-const MOVE_DELAY   = 110;  // ms entre movimentos
+const BASE_MOVE_DELAY = 110;
+const MIN_MOVE_DELAY  = 72;
+const MOVE_DELAY_STEP = 4;
 const MOBILE_MIN_CELL = 26;
+const COLLISION_FLASH_MS = 140;
+const BEST_SCORE_KEY = 'transportes-figueiredo-best-score';
+const CONTROL_KEYS = new Set(['arrowup', 'arrowdown', 'arrowleft', 'arrowright', 'w', 'a', 's', 'd']);
 
 // ── State ──
 let level        = 1;
@@ -162,27 +199,73 @@ let lastMoveTime = 0;
 let startTime    = 0;
 let tiltGamma    = 0;
 let tiltBeta     = 0;
+let currentMoveDelay = BASE_MOVE_DELAY;
+let currentParTime   = 20;
+let currentBasePoints = 100;
+let currentLevelTime = 0;
+let levelPathLength  = 0;
+let collisionFlashUntil = 0;
+let missionRevealTimeout = 0;
 let gameActive   = false;
 let sensorsOk    = false;
 let hasGameStarted = false;
 let gameLoopStarted = false;
+let bestScore    = loadBestScore();
 
 // ── Touch State ──
 let touchStartX = 0, touchStartY = 0;
 let isTouching  = false;
+const keysDown  = {};
+const keyPressedAt = {};
 
 // ── DOM ──
 const canvas         = document.getElementById('gameCanvas');
 const ctx            = canvas.getContext('2d');
 const hudLevel       = document.getElementById('levelDisplay');
 const hudScore       = document.getElementById('scoreDisplay');
+const hudTimer       = document.getElementById('timerDisplay');
+const hudBest        = document.getElementById('bestDisplay');
 const startOverlay   = document.getElementById('startOverlay');
 const missionOverlay = document.getElementById('missionOverlay');
 const missionPts     = document.getElementById('missionPts');
 const missionBonus   = document.getElementById('missionBonus');
 const startBtn       = document.getElementById('startBtn');
 const nextBtn        = document.getElementById('nextBtn');
+const restartBtn     = document.getElementById('restartBtn');
 const controlHint    = document.getElementById('controlHint');
+
+function loadBestScore() {
+  try {
+    return Number(localStorage.getItem(BEST_SCORE_KEY) || 0);
+  } catch (error) {
+    console.warn('Não foi possível ler o recorde.', error);
+    return 0;
+  }
+}
+
+function saveBestScore() {
+  hudBest.textContent = bestScore;
+  try {
+    localStorage.setItem(BEST_SCORE_KEY, String(bestScore));
+  } catch (error) {
+    console.warn('Não foi possível guardar o recorde.', error);
+  }
+}
+
+function normalizeKey(key) {
+  return key.length === 1 ? key.toLowerCase() : key.toLowerCase();
+}
+
+function isControlKey(key) {
+  return CONTROL_KEYS.has(normalizeKey(key));
+}
+
+function updateHud() {
+  hudLevel.textContent = level;
+  hudScore.textContent = score;
+  hudTimer.textContent = `${currentLevelTime.toFixed(1)}s`;
+  hudBest.textContent = bestScore;
+}
 
 function isTouchDevice() {
   return window.matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
@@ -190,13 +273,13 @@ function isTouchDevice() {
 
 function updateControlHint() {
   if (sensorsOk) {
-    controlHint.textContent = 'Incline ou arraste para mover';
+    controlHint.textContent = 'Incline ou arraste para mover · ↻ reinicia o nível';
     return;
   }
 
   controlHint.textContent = isTouchDevice()
-    ? 'Arraste o dedo para mover'
-    : 'Use as setas ou WASD';
+    ? 'Arraste o dedo para mover · ↻ reinicia o nível'
+    : 'Use as setas ou WASD · R reinicia';
 }
 
 function getLevelGridSize(currentLevel) {
@@ -283,7 +366,8 @@ function resizeCanvas() {
 function drawMaze() {
   const w = window.innerWidth;
   const h = window.innerHeight;
-  ctx.fillStyle = BG_COLOR;
+  const hitActive = Date.now() < collisionFlashUntil;
+  ctx.fillStyle = hitActive ? '#314551' : BG_COLOR;
   ctx.fillRect(0, 0, w, h);
 
   if (!maze.length || !maze[0] || maze.length !== rows || maze[0].length !== cols) {
@@ -298,7 +382,7 @@ function drawMaze() {
   ctx.translate(offsetX, offsetY);
 
   // Paredes
-  ctx.strokeStyle = WALL_COLOR;
+  ctx.strokeStyle = hitActive ? '#e74c3c' : WALL_COLOR;
   ctx.lineWidth   = WALL_WIDTH;
   ctx.lineCap     = 'round';
 
@@ -315,9 +399,14 @@ function drawMaze() {
     }
   }
 
-  ctx.strokeStyle = WALL_COLOR;
+  ctx.strokeStyle = hitActive ? '#e74c3c' : WALL_COLOR;
   ctx.lineWidth   = WALL_WIDTH + 2;
   ctx.strokeRect(0, 0, cols * cellW, rows * cellH);
+
+  if (hitActive) {
+    ctx.fillStyle = 'rgba(231,76,60,.08)';
+    ctx.fillRect(0, 0, cols * cellW, rows * cellH);
+  }
 
   // Objetivo
   const gx = goalX * cellW + cellW * 0.15;
@@ -374,10 +463,154 @@ function roundRect(ctx, x, y, w, h, r) {
   ctx.closePath();
 }
 
+function getOpenNeighbors(x, y) {
+  const cell = maze[y][x];
+  const neighbors = [];
+
+  if (!cell.top && y > 0) neighbors.push([x, y - 1]);
+  if (!cell.right && x < cols - 1) neighbors.push([x + 1, y]);
+  if (!cell.bottom && y < rows - 1) neighbors.push([x, y + 1]);
+  if (!cell.left && x > 0) neighbors.push([x - 1, y]);
+
+  return neighbors;
+}
+
+function findFarthestCell(startX, startY) {
+  const distances = Array.from({ length: rows }, () => Array(cols).fill(-1));
+  const queue = [[startX, startY]];
+  let queueIndex = 0;
+  let farthest = { x: startX, y: startY, distance: 0 };
+
+  distances[startY][startX] = 0;
+
+  while (queueIndex < queue.length) {
+    const [x, y] = queue[queueIndex++];
+    const distance = distances[y][x];
+
+    if (distance > farthest.distance) {
+      farthest = { x, y, distance };
+    }
+
+    for (const [nextX, nextY] of getOpenNeighbors(x, y)) {
+      if (distances[nextY][nextX] !== -1) continue;
+      distances[nextY][nextX] = distance + 1;
+      queue.push([nextX, nextY]);
+    }
+  }
+
+  return farthest;
+}
+
+function findMazeEndpoints() {
+  const start = findFarthestCell(0, 0);
+  const goal = findFarthestCell(start.x, start.y);
+
+  return {
+    startX: start.x,
+    startY: start.y,
+    goalX: goal.x,
+    goalY: goal.y,
+    distance: goal.distance
+  };
+}
+
+function getLevelConfig(currentLevel, pathLength) {
+  return {
+    moveDelay: Math.max(MIN_MOVE_DELAY, BASE_MOVE_DELAY - (currentLevel - 1) * MOVE_DELAY_STEP),
+    parTime: Math.max(15, Math.round(pathLength * 0.85 + currentLevel * 2.5)),
+    basePoints: 100 + currentLevel * 15 + pathLength * 2
+  };
+}
+
+function getAxisDirection(negativeKeys, positiveKeys) {
+  const negativePressedAt = negativeKeys.reduce((latest, key) => {
+    return keysDown[key] ? Math.max(latest, keyPressedAt[key] || 0) : latest;
+  }, 0);
+  const positivePressedAt = positiveKeys.reduce((latest, key) => {
+    return keysDown[key] ? Math.max(latest, keyPressedAt[key] || 0) : latest;
+  }, 0);
+
+  if (!negativePressedAt && !positivePressedAt) {
+    return { value: 0, pressedAt: 0 };
+  }
+
+  if (negativePressedAt === positivePressedAt) {
+    return { value: negativePressedAt ? -1 : 1, pressedAt: Math.max(negativePressedAt, positivePressedAt) };
+  }
+
+  return negativePressedAt > positivePressedAt
+    ? { value: -1, pressedAt: negativePressedAt }
+    : { value: 1, pressedAt: positivePressedAt };
+}
+
+function getKeyboardDirection() {
+  const horizontal = getAxisDirection(['arrowleft', 'a'], ['arrowright', 'd']);
+  const vertical = getAxisDirection(['arrowup', 'w'], ['arrowdown', 's']);
+
+  if (horizontal.value && vertical.value) {
+    return horizontal.pressedAt > vertical.pressedAt
+      ? { dx: horizontal.value, dy: 0 }
+      : { dx: 0, dy: vertical.value };
+  }
+
+  return { dx: horizontal.value, dy: vertical.value };
+}
+
+function getTiltDirection() {
+  const horizontal = Math.abs(tiltGamma) > THRESHOLD ? Math.sign(tiltGamma) : 0;
+  const vertical = Math.abs(tiltBeta) > THRESHOLD ? Math.sign(tiltBeta) : 0;
+
+  if (horizontal && vertical) {
+    return Math.abs(tiltGamma) > Math.abs(tiltBeta)
+      ? { dx: horizontal, dy: 0 }
+      : { dx: 0, dy: vertical };
+  }
+
+  return { dx: horizontal, dy: vertical };
+}
+
+function syncBestScore() {
+  if (score <= bestScore) {
+    updateHud();
+    return;
+  }
+
+  bestScore = score;
+  saveBestScore();
+  updateHud();
+}
+
+function clearMissionOverlay() {
+  window.clearTimeout(missionRevealTimeout);
+  missionOverlay.classList.add('hidden');
+}
+
+function triggerCollisionFeedback(now) {
+  collisionFlashUntil = now + COLLISION_FLASH_MS;
+  if (navigator.vibrate) navigator.vibrate(18);
+  drawMaze();
+}
+
+function normalizeDirection(dx, dy) {
+  let nextDx = Math.sign(dx);
+  let nextDy = Math.sign(dy);
+
+  if (nextDx && nextDy) {
+    if (Math.abs(dx) > Math.abs(dy)) {
+      nextDy = 0;
+    } else {
+      nextDx = 0;
+    }
+  }
+
+  return { dx: nextDx, dy: nextDy };
+}
+
 // ═══════════════════════════════════════════════════════
 //  MOVEMENT & COLLISION
 // ═══════════════════════════════════════════════════════
 function canMove(dx, dy) {
+  if (!dx && !dy) return false;
   const cell = maze[playerY][playerX];
   if (dx ===  1 && cell.right)  return false;
   if (dx === -1 && cell.left)   return false;
@@ -388,8 +621,14 @@ function canMove(dx, dy) {
 
 function movePlayer(dx, dy) {
   if (!gameActive) return;
+
+  const nextDirection = normalizeDirection(dx, dy);
+  dx = nextDirection.dx;
+  dy = nextDirection.dy;
+  if (!dx && !dy) return;
+
   const now = Date.now();
-  if (now - lastMoveTime < MOVE_DELAY) return;
+  if (now - lastMoveTime < currentMoveDelay) return;
 
   if (canMove(dx, dy)) {
     playerX += dx;
@@ -398,29 +637,46 @@ function movePlayer(dx, dy) {
     if (navigator.vibrate) navigator.vibrate(12);
     drawMaze();
     checkGoal();
+    return;
   }
+
+  lastMoveTime = now;
+  triggerCollisionFeedback(now);
 }
 
 function checkGoal() {
   if (playerX === goalX && playerY === goalY) {
     gameActive = false;
-    const elapsed  = (Date.now() - startTime) / 1000;
-    const timeBonus = Math.max(0, Math.floor(50 - elapsed) * 2);
-    const totalPts  = 100 + timeBonus;
+    const elapsed = currentLevelTime || (Date.now() - startTime) / 1000;
+    const timeBonus = Math.max(0, Math.round((currentParTime - elapsed) * 5));
+    const totalPts  = currentBasePoints + timeBonus;
     score += totalPts;
-    hudScore.textContent = score;
     missionPts.textContent   = '+' + totalPts;
-    missionBonus.textContent = 'Bónus de tempo: +' + timeBonus;
-    setTimeout(() => missionOverlay.classList.remove('hidden'), 300);
+    missionBonus.textContent = `Tempo: ${elapsed.toFixed(1)}s / alvo ${currentParTime}s · bónus +${timeBonus}`;
+    syncBestScore();
+    missionRevealTimeout = window.setTimeout(() => missionOverlay.classList.remove('hidden'), 250);
   }
 }
 
 // ═══════════════════════════════════════════════════════
 //  INPUT: TOUCH (SWIPE), KEYBOARD, SENSORS
 // ═══════════════════════════════════════════════════════
-const keysDown = {};
-window.addEventListener('keydown', e => { keysDown[e.key] = true;  e.preventDefault(); });
-window.addEventListener('keyup',   e => { keysDown[e.key] = false; });
+window.addEventListener('keydown', (event) => {
+  const normalizedKey = normalizeKey(event.key);
+
+  if (isControlKey(normalizedKey)) {
+    keysDown[normalizedKey] = true;
+    keyPressedAt[normalizedKey] = Date.now();
+    event.preventDefault();
+  }
+});
+
+window.addEventListener('keyup', (event) => {
+  const normalizedKey = normalizeKey(event.key);
+  if (isControlKey(normalizedKey)) {
+    keysDown[normalizedKey] = false;
+  }
+});
 
 // Touch Swipe
 canvas.addEventListener('touchstart', (e) => {
@@ -514,23 +770,30 @@ function startGame(event) {
   }
 }
 
+function restartLevel() {
+  if (!hasGameStarted) {
+    startGame();
+    return;
+  }
+
+  clearMissionOverlay();
+  startLevel();
+}
+
 // Game Loop (para teclado e sensores)
 function gameLoop() {
   if (gameActive) {
-    let dx = 0, dy = 0;
-    if (keysDown['ArrowUp'] || keysDown['w']) dy = -1;
-    if (keysDown['ArrowDown'] || keysDown['s']) dy = 1;
-    if (keysDown['ArrowLeft'] || keysDown['a']) dx = -1;
-    if (keysDown['ArrowRight'] || keysDown['d']) dx = 1;
+    currentLevelTime = (Date.now() - startTime) / 1000;
+    let { dx, dy } = getKeyboardDirection();
 
     if (sensorsOk && !dx && !dy) {
-      if (tiltGamma > THRESHOLD) dx = 1;
-      if (tiltGamma < -THRESHOLD) dx = -1;
-      if (tiltBeta > THRESHOLD) dy = 1;
-      if (tiltBeta < -THRESHOLD) dy = -1;
+      ({ dx, dy } = getTiltDirection());
     }
+
     if (dx || dy) movePlayer(dx, dy);
   }
+
+  updateHud();
   requestAnimationFrame(gameLoop);
 }
 
@@ -538,18 +801,31 @@ function gameLoop() {
 //  LEVEL MANAGEMENT & INIT
 // ═══════════════════════════════════════════════════════
 function startLevel() {
-  missionOverlay.classList.add('hidden');
+  clearMissionOverlay();
   const gridSize = getLevelGridSize(level);
   cols = gridSize.cols;
   rows = gridSize.rows;
-  maze    = generateMaze(rows, cols);
-  playerX = 0; playerY = 0;
-  goalX   = cols - 1; goalY = rows - 1;
-  hudLevel.textContent = level;
+  maze = generateMaze(rows, cols);
+
+  const endpoints = findMazeEndpoints();
+  const levelConfig = getLevelConfig(level, endpoints.distance);
+
+  playerX = endpoints.startX;
+  playerY = endpoints.startY;
+  goalX = endpoints.goalX;
+  goalY = endpoints.goalY;
+  levelPathLength = endpoints.distance;
+  currentMoveDelay = levelConfig.moveDelay;
+  currentParTime = levelConfig.parTime;
+  currentBasePoints = levelConfig.basePoints;
+  currentLevelTime = 0;
+  lastMoveTime = 0;
+  collisionFlashUntil = 0;
   resizeCanvas();
   drawMaze();
   gameActive = true;
-  startTime  = Date.now();
+  startTime = Date.now();
+  updateHud();
   updateControlHint();
 }
 
@@ -558,13 +834,16 @@ startBtn.addEventListener('pointerdown', startGame);
 startBtn.addEventListener('touchstart', startGame, { passive: false });
 startOverlay.addEventListener('pointerdown', startGame);
 startOverlay.addEventListener('touchstart', startGame, { passive: false });
+restartBtn.addEventListener('click', restartLevel);
 window.addEventListener('keydown', (event) => {
-  if (startOverlay.classList.contains('hidden')) {
+  if (!startOverlay.classList.contains('hidden') && (event.key === 'Enter' || event.key === ' ')) {
+    startGame(event);
     return;
   }
 
-  if (event.key === 'Enter' || event.key === ' ') {
-    startGame(event);
+  if (normalizeKey(event.key) === 'r' && hasGameStarted) {
+    event.preventDefault();
+    restartLevel();
   }
 });
 
@@ -574,6 +853,8 @@ window.addEventListener('resize', () => { resizeCanvas(); drawMaze(); });
 // Init
 resizeCanvas();
 drawMaze();
+saveBestScore();
+updateHud();
 updateControlHint();
 </script>
 </body>
