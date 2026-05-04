@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, maximum-scale=1.0" />
+  <title>Transportes Figueiredo — Labirinto</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      width: 100%; height: 100%;
+      overflow: hidden;
+      background: #1a252f;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      touch-action: none;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+
+    /* ── HUD ── */
+    #hud {
+      position: fixed; top: 0; left: 0; right: 0;
+      display: flex; justify-content: space-between; align-items: center;
+      padding: calc(12px + env(safe-area-inset-top)) 18px 12px;
+      background: rgba(0,0,0,.6);
+      color: #ecf0f1;
+      font-size: 15px; font-weight: 600;
+      z-index: 10;
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+    }
+    #hud span { display: flex; align-items: center; gap: 6px; }
+    #hud .icon { font-size: 18px; }
+
+    /* ── Canvas ── */
+    #gameCanvas { display: block; position: absolute; top: 0; left: 0; }
+
+    /* ── Overlays ── */
+    .overlay {
+      position: fixed; inset: 0;
+      display: flex; flex-direction: column;
+      justify-content: center; align-items: center;
+      padding: calc(24px + env(safe-area-inset-top)) 16px calc(24px + env(safe-area-inset-bottom));
+      background: rgba(26,37,47,.94);
+      z-index: 50;
+      transition: opacity .3s;
+    }
+    .overlay.hidden { opacity: 0; pointer-events: none; }
+
+    .overlay h1 {
+      color: #e67e22;
+      font-size: 26px;
+      margin-bottom: 8px;
+      text-align: center;
+    }
+    .overlay p {
+      color: #bdc3c7;
+      font-size: 14px;
+      text-align: center;
+      max-width: min(300px, 90vw);
+      margin-bottom: 24px;
+      line-height: 1.5;
+    }
+    .overlay .btn {
+      padding: 14px 32px;
+      font-size: 16px; font-weight: 700;
+      color: #fff;
+      background: #e67e22;
+      border: none; border-radius: 10px;
+      cursor: pointer;
+      box-shadow: 0 4px 16px rgba(230,126,34,.4);
+      transition: transform .1s;
+    }
+    .overlay .btn:active { transform: scale(.96); }
+
+    .mission-score {
+      color: #2ecc71;
+      font-size: 38px; font-weight: 800;
+      margin-bottom: 4px;
+    }
+    .mission-bonus {
+      color: #3498db;
+      font-size: 15px;
+      margin-bottom: 20px;
+    }
+
+    #controlHint {
+      position: fixed; bottom: calc(16px + env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%);
+      color: rgba(255,255,255,.4); font-size: 12px; text-align: center;
+      width: calc(100% - 32px);
+      z-index: 10;
+    }
+
+    @media (max-width: 480px) {
+      #hud {
+        padding-left: 12px;
+        padding-right: 12px;
+        font-size: 14px;
+      }
+
+      .overlay h1 { font-size: 22px; }
+
+      .overlay .btn {
+        width: min(100%, 320px);
+        padding: 14px 20px;
+      }
+    }
+  </style>
+</head>
+<body>
+
+<div id="hud">
+  <span><span class="icon">📦</span> Nível <b id="levelDisplay">1</b></span>
+  <span><span class="icon">⭐</span> <b id="scoreDisplay">0</b> pts</span>
+</div>
+
+<canvas id="gameCanvas"></canvas>
+
+<div id="startOverlay" class="overlay">
+  <h1>🚛 Transportes Figueiredo</h1>
+  <p>Arrasta o dedo no ecrã ou inclina o telemóvel para guiar o camião até ao galpão.</p>
+  <button class="btn" id="startBtn">🎮 COMEÇAR ENTREGA</button>
+</div>
+
+<div id="missionOverlay" class="overlay hidden">
+  <h1>✅ Missão Cumprida!</h1>
+  <div class="mission-score" id="missionPts">+100</div>
+  <div class="mission-bonus" id="missionBonus">Bónus de tempo: +50</div>
+  <button class="btn" id="nextBtn">Próximo Nível ➜</button>
+</div>
+
+<div id="controlHint">Desktop: ⬆⬇⬅➜ | Mobile: Swipe ou inclinação</div>
+
+<script>
+/* ═══════════════════════════════════════════════════════
+   TRANSPORTES FIGUEIREDO — MAZE GAME (Mobile Optimized)
+   ═══════════════════════════════════════════════════════ */
+
+// ── Config ──
+const WALL_COLOR   = '#95a5a6';
+const WALL_WIDTH   = 3;
+const BG_COLOR     = '#2c3e50';
+const GOAL_COLOR   = '#27ae60';
+const PLAYER_COLOR = '#e67e22';
+const PLAYER_DIR_COLOR = '#d35400';
+const THRESHOLD    = 10;   // inclinação mínima (graus)
+const SWIPE_THRESH = 25;   // swipe mínimo (px)
+const MOVE_DELAY   = 110;  // ms entre movimentos
+const MOBILE_MIN_CELL = 26;
+
+// ── State ──
+let level        = 1;
+let score        = 0;
+let cols         = 12;
+let rows         = 10;
+let cellW, cellH;
+let maze         = [];
+let playerX      = 0;
+let playerY      = 0;
+let goalX, goalY;
+let lastMoveTime = 0;
+let startTime    = 0;
+let tiltGamma    = 0;
+let tiltBeta     = 0;
+let gameActive   = false;
+let sensorsOk    = false;
+
+// ── Touch State ──
+let touchStartX = 0, touchStartY = 0;
+let isTouching  = false;
+
+// ── DOM ──
+const canvas         = document.getElementById('gameCanvas');
+const ctx            = canvas.getContext('2d');
+const hudLevel       = document.getElementById('levelDisplay');
+const hudScore       = document.getElementById('scoreDisplay');
+const startOverlay   = document.getElementById('startOverlay');
+const missionOverlay = document.getElementById('missionOverlay');
+const missionPts     = document.getElementById('missionPts');
+const missionBonus   = document.getElementById('missionBonus');
+const startBtn       = document.getElementById('startBtn');
+const nextBtn        = document.getElementById('nextBtn');
+const controlHint    = document.getElementById('controlHint');
+
+function isTouchDevice() {
+  return window.matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
+}
+
+function updateControlHint() {
+  if (sensorsOk) {
+    controlHint.textContent = 'Incline ou arraste para mover';
+    return;
+  }
+
+  controlHint.textContent = isTouchDevice()
+    ? 'Arraste o dedo para mover'
+    : 'Use as setas ou WASD';
+}
+
+function getLevelGridSize(currentLevel) {
+  const desiredCols = 12 + (currentLevel - 1) * 2;
+  const desiredRows = 10 + (currentLevel - 1) * 2;
+  const hudH = document.getElementById('hud').getBoundingClientRect().height || 46;
+  const minCellSize = window.innerWidth <= 480 ? MOBILE_MIN_CELL : 24;
+  const maxCols = Math.max(8, Math.floor(window.innerWidth / minCellSize));
+  const maxRows = Math.max(8, Math.floor((window.innerHeight - hudH) / minCellSize));
+
+  return {
+    cols: Math.min(desiredCols, maxCols),
+    rows: Math.min(desiredRows, maxRows)
+  };
+}
+
+// ═══════════════════════════════════════════════════════
+//  MAZE GENERATION (DFS Backtracking)
+// ═══════════════════════════════════════════════════════
+function generateMaze(r, c) {
+  const grid = [];
+  for (let i = 0; i < r; i++) {
+    grid[i] = [];
+    for (let j = 0; j < c; j++) {
+      grid[i][j] = { top: true, right: true, bottom: true, left: true, visited: false };
+    }
+  }
+
+  const stack = [];
+  let cx = 0, cy = 0;
+  grid[cy][cx].visited = true;
+  stack.push([cx, cy]);
+
+  const dirs = [
+    [0, -1, 'top',    'bottom'],
+    [1,  0, 'right',  'left'],
+    [0,  1, 'bottom', 'top'],
+    [-1, 0, 'left',   'right']
+  ];
+
+  while (stack.length > 0) {
+    const neighbours = dirs
+      .map(([dx, dy, wall, opp]) => [cx + dx, cy + dy, wall, opp])
+      .filter(([nx, ny]) => nx >= 0 && nx < c && ny >= 0 && ny < r && !grid[ny][nx].visited);
+
+    if (neighbours.length > 0) {
+      const [nx, ny, wall, opp] = neighbours[Math.floor(Math.random() * neighbours.length)];
+      grid[cy][cx][wall] = false;
+      grid[ny][nx][opp]  = false;
+      grid[ny][nx].visited = true;
+      stack.push([cx, cy]);
+      cx = nx; cy = ny;
+    } else {
+      [cx, cy] = stack.pop();
+    }
+  }
+  return grid;
+}
+
+// ═══════════════════════════════════════════════════════
+//  CANVAS & RESIZE
+// ═══════════════════════════════════════════════════════
+function resizeCanvas() {
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width  = window.innerWidth * dpr;
+  canvas.height = window.innerHeight * dpr;
+  canvas.style.width  = `${window.innerWidth}px`;
+  canvas.style.height = `${window.innerHeight}px`;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.scale(dpr, dpr);
+
+  const hudH = document.getElementById('hud').getBoundingClientRect().height || 46;
+  const availW = window.innerWidth;
+  const availH = window.innerHeight - hudH;
+  cellW = Math.floor(availW / cols);
+  cellH = Math.floor(availH / rows);
+  const cellSize = Math.min(cellW, cellH);
+  cellW = cellH = cellSize;
+}
+
+// ═══════════════════════════════════════════════════════
+//  DRAWING
+// ═══════════════════════════════════════════════════════
+function drawMaze() {
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  ctx.fillStyle = BG_COLOR;
+  ctx.fillRect(0, 0, w, h);
+
+  if (!maze.length || !maze[0] || maze.length !== rows || maze[0].length !== cols) {
+    return;
+  }
+
+  const offsetX = (w - cols * cellW) / 2;
+  const hudH = document.getElementById('hud').getBoundingClientRect().height || 46;
+  const offsetY = hudH + (h - hudH - rows * cellH) / 2;
+
+  ctx.save();
+  ctx.translate(offsetX, offsetY);
+
+  // Paredes
+  ctx.strokeStyle = WALL_COLOR;
+  ctx.lineWidth   = WALL_WIDTH;
+  ctx.lineCap     = 'round';
+
+  for (let y = 0; y < rows; y++) {
+    for (let x = 0; x < cols; x++) {
+      const cell = maze[y][x];
+      const px = x * cellW;
+      const py = y * cellH;
+
+      if (cell.top)    { ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(px + cellW, py); ctx.stroke(); }
+      if (cell.right)  { ctx.beginPath(); ctx.moveTo(px + cellW, py); ctx.lineTo(px + cellW, py + cellH); ctx.stroke(); }
+      if (cell.bottom) { ctx.beginPath(); ctx.moveTo(px, py + cellH); ctx.lineTo(px + cellW, py + cellH); ctx.stroke(); }
+      if (cell.left)   { ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(px, py + cellH); ctx.stroke(); }
+    }
+  }
+
+  ctx.strokeStyle = WALL_COLOR;
+  ctx.lineWidth   = WALL_WIDTH + 2;
+  ctx.strokeRect(0, 0, cols * cellW, rows * cellH);
+
+  // Objetivo
+  const gx = goalX * cellW + cellW * 0.15;
+  const gy = goalY * cellH + cellH * 0.15;
+  const gs = cellW * 0.7;
+  ctx.fillStyle = GOAL_COLOR;
+  ctx.shadowColor = 'rgba(39,174,96,.5)';
+  ctx.shadowBlur  = 12;
+  roundRect(ctx, gx, gy, gs, gs, 3);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+
+  ctx.fillStyle = '#1e8449';
+  ctx.beginPath();
+  ctx.moveTo(gx, gy);
+  ctx.lineTo(gx + gs/2, gy - gs*0.15);
+  ctx.lineTo(gx + gs, gy);
+  ctx.closePath();
+  ctx.fill();
+
+  // Player
+  const pw = cellW * 0.6;
+  const ph = cellH * 0.6;
+  const ppx = playerX * cellW + (cellW - pw) / 2;
+  const ppy = playerY * cellH + (cellH - ph) / 2;
+
+  ctx.fillStyle = PLAYER_COLOR;
+  ctx.shadowColor = 'rgba(230,126,34,.4)';
+  ctx.shadowBlur  = 8;
+  roundRect(ctx, ppx, ppy, pw, ph, 4);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+
+  ctx.fillStyle = PLAYER_DIR_COLOR;
+  const winH = ph * 0.25;
+  const winY = ppy + ph * 0.12;
+  roundRect(ctx, ppx + pw*0.15, winY, pw*0.7, winH, 2);
+  ctx.fill();
+
+  ctx.restore();
+}
+
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+}
+
+// ═══════════════════════════════════════════════════════
+//  MOVEMENT & COLLISION
+// ═══════════════════════════════════════════════════════
+function canMove(dx, dy) {
+  const cell = maze[playerY][playerX];
+  if (dx ===  1 && cell.right)  return false;
+  if (dx === -1 && cell.left)   return false;
+  if (dy ===  1 && cell.bottom) return false;
+  if (dy === -1 && cell.top)    return false;
+  return (playerX + dx >= 0 && playerX + dx < cols && playerY + dy >= 0 && playerY + dy < rows);
+}
+
+function movePlayer(dx, dy) {
+  if (!gameActive) return;
+  const now = Date.now();
+  if (now - lastMoveTime < MOVE_DELAY) return;
+
+  if (canMove(dx, dy)) {
+    playerX += dx;
+    playerY += dy;
+    lastMoveTime = now;
+    if (navigator.vibrate) navigator.vibrate(12);
+    drawMaze();
+    checkGoal();
+  }
+}
+
+function checkGoal() {
+  if (playerX === goalX && playerY === goalY) {
+    gameActive = false;
+    const elapsed  = (Date.now() - startTime) / 1000;
+    const timeBonus = Math.max(0, Math.floor(50 - elapsed) * 2);
+    const totalPts  = 100 + timeBonus;
+    score += totalPts;
+    hudScore.textContent = score;
+    missionPts.textContent   = '+' + totalPts;
+    missionBonus.textContent = 'Bónus de tempo: +' + timeBonus;
+    setTimeout(() => missionOverlay.classList.remove('hidden'), 300);
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+//  INPUT: TOUCH (SWIPE), KEYBOARD, SENSORS
+// ═══════════════════════════════════════════════════════
+const keysDown = {};
+window.addEventListener('keydown', e => { keysDown[e.key] = true;  e.preventDefault(); });
+window.addEventListener('keyup',   e => { keysDown[e.key] = false; });
+
+// Touch Swipe
+canvas.addEventListener('touchstart', (e) => {
+  e.preventDefault();
+  touchStartX = e.touches[0].clientX;
+  touchStartY = e.touches[0].clientY;
+  isTouching = true;
+}, { passive: false });
+
+canvas.addEventListener('touchmove', (e) => {
+  e.preventDefault();
+  if (!isTouching || !gameActive) return;
+  
+  const dx = e.touches[0].clientX - touchStartX;
+  const dy = e.touches[0].clientY - touchStartY;
+
+  if (Math.abs(dx) > SWIPE_THRESH || Math.abs(dy) > SWIPE_THRESH) {
+    if (Math.abs(dx) > Math.abs(dy)) {
+      movePlayer(dx > 0 ? 1 : -1, 0);
+    } else {
+      movePlayer(0, dy > 0 ? 1 : -1);
+    }
+    // Reset para permitir swipe contínuo
+    touchStartX = e.touches[0].clientX;
+    touchStartY = e.touches[0].clientY;
+  }
+}, { passive: false });
+
+canvas.addEventListener('touchend', () => { isTouching = false; });
+
+// Sensor Orientation
+function onOrientation(e) {
+  tiltGamma = e.gamma || 0;
+  tiltBeta  = e.beta  || 0;
+}
+
+function initSensors() {
+  sensorsOk = false;
+
+  if (!window.isSecureContext) {
+    updateControlHint();
+    return;
+  }
+
+  if (typeof DeviceOrientationEvent === 'undefined') {
+    console.warn('API DeviceOrientation não suportada.');
+    updateControlHint();
+    return;
+  }
+  
+  // iOS 13+ requer permissão explícita
+  if (typeof DeviceOrientationEvent.requestPermission === 'function') {
+    DeviceOrientationEvent.requestPermission()
+      .then(resp => {
+        if (resp === 'granted') {
+          window.addEventListener('deviceorientation', onOrientation);
+          sensorsOk = true;
+        }
+        updateControlHint();
+      })
+      .catch(err => {
+        console.error(err);
+        updateControlHint();
+      });
+  } else {
+    // Android / Desktop
+    window.addEventListener('deviceorientation', onOrientation);
+    sensorsOk = true;
+    updateControlHint();
+  }
+}
+
+// Game Loop (para teclado e sensores)
+function gameLoop() {
+  if (gameActive) {
+    let dx = 0, dy = 0;
+    if (keysDown['ArrowUp'] || keysDown['w']) dy = -1;
+    if (keysDown['ArrowDown'] || keysDown['s']) dy = 1;
+    if (keysDown['ArrowLeft'] || keysDown['a']) dx = -1;
+    if (keysDown['ArrowRight'] || keysDown['d']) dx = 1;
+
+    if (sensorsOk && !dx && !dy) {
+      if (tiltGamma > THRESHOLD) dx = 1;
+      if (tiltGamma < -THRESHOLD) dx = -1;
+      if (tiltBeta > THRESHOLD) dy = 1;
+      if (tiltBeta < -THRESHOLD) dy = -1;
+    }
+    if (dx || dy) movePlayer(dx, dy);
+  }
+  requestAnimationFrame(gameLoop);
+}
+
+// ═══════════════════════════════════════════════════════
+//  LEVEL MANAGEMENT & INIT
+// ═══════════════════════════════════════════════════════
+function startLevel() {
+  missionOverlay.classList.add('hidden');
+  const gridSize = getLevelGridSize(level);
+  cols = gridSize.cols;
+  rows = gridSize.rows;
+  maze    = generateMaze(rows, cols);
+  playerX = 0; playerY = 0;
+  goalX   = cols - 1; goalY = rows - 1;
+  hudLevel.textContent = level;
+  resizeCanvas();
+  drawMaze();
+  gameActive = true;
+  startTime  = Date.now();
+  updateControlHint();
+}
+
+startBtn.addEventListener('click', () => {
+  if (!window.isSecureContext) {
+    alert('⚠️ Para usar os sensores de inclinação, este ficheiro deve ser servido via HTTPS.\nOs controlos por toque funcionarão na mesma!');
+  }
+  initSensors();
+  startOverlay.classList.add('hidden');
+  startLevel();
+  gameLoop();
+});
+
+nextBtn.addEventListener('click', () => { level++; startLevel(); });
+window.addEventListener('resize', () => { resizeCanvas(); drawMaze(); });
+
+// Init
+resizeCanvas();
+drawMaze();
+updateControlHint();
+</script>
+</body>
+</html>
