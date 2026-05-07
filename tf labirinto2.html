@@ -150,7 +150,7 @@
 
 <div id="startOverlay" class="overlay">
   <h1>🚛 Transportes Figueiredo</h1>
-  <p>Arrasta o dedo no ecrã ou inclina o telemóvel para guiar o camião até ao galpão.</p>
+  <p>Arrasta o dedo no ecrã para guiar o camião até ao galpão.</p>
   <button class="btn" id="startBtn" type="button">🎮 COMEÇAR ENTREGA</button>
 </div>
 
@@ -161,7 +161,7 @@
   <button class="btn" id="nextBtn" type="button">Próximo Nível ➜</button>
 </div>
 
-<div id="controlHint">Desktop: ⬆⬇⬅➜ | Mobile: Swipe ou inclinação</div>
+<div id="controlHint">Desktop: ⬆⬇⬅➜ | Mobile: Swipe</div>
 
 <script>
 /* ═══════════════════════════════════════════════════════
@@ -175,7 +175,6 @@ const BG_COLOR     = '#2c3e50';
 const GOAL_COLOR   = '#27ae60';
 const PLAYER_COLOR = '#e67e22';
 const PLAYER_DIR_COLOR = '#d35400';
-const THRESHOLD    = 10;   // inclinação mínima (graus)
 const SWIPE_THRESH = 25;   // swipe mínimo (px)
 const BASE_MOVE_DELAY = 110;
 const MIN_MOVE_DELAY  = 72;
@@ -197,8 +196,6 @@ let playerY      = 0;
 let goalX, goalY;
 let lastMoveTime = 0;
 let startTime    = 0;
-let tiltGamma    = 0;
-let tiltBeta     = 0;
 let currentMoveDelay = BASE_MOVE_DELAY;
 let currentParTime   = 20;
 let currentBasePoints = 100;
@@ -207,7 +204,6 @@ let levelPathLength  = 0;
 let collisionFlashUntil = 0;
 let missionRevealTimeout = 0;
 let gameActive   = false;
-let sensorsOk    = false;
 let hasGameStarted = false;
 let gameLoopStarted = false;
 let bestScore    = loadBestScore();
@@ -272,11 +268,6 @@ function isTouchDevice() {
 }
 
 function updateControlHint() {
-  if (sensorsOk) {
-    controlHint.textContent = 'Incline ou arraste para mover · ↻ reinicia o nível';
-    return;
-  }
-
   controlHint.textContent = isTouchDevice()
     ? 'Arraste o dedo para mover · ↻ reinicia o nível'
     : 'Use as setas ou WASD · R reinicia';
@@ -556,19 +547,6 @@ function getKeyboardDirection() {
   return { dx: horizontal.value, dy: vertical.value };
 }
 
-function getTiltDirection() {
-  const horizontal = Math.abs(tiltGamma) > THRESHOLD ? Math.sign(tiltGamma) : 0;
-  const vertical = Math.abs(tiltBeta) > THRESHOLD ? Math.sign(tiltBeta) : 0;
-
-  if (horizontal && vertical) {
-    return Math.abs(tiltGamma) > Math.abs(tiltBeta)
-      ? { dx: horizontal, dy: 0 }
-      : { dx: 0, dy: vertical };
-  }
-
-  return { dx: horizontal, dy: vertical };
-}
-
 function syncBestScore() {
   if (score <= bestScore) {
     updateHud();
@@ -663,7 +641,7 @@ function checkGoal() {
 }
 
 // ═══════════════════════════════════════════════════════
-//  INPUT: TOUCH (SWIPE), KEYBOARD, SENSORS
+//  INPUT: TOUCH (SWIPE), KEYBOARD
 // ═══════════════════════════════════════════════════════
 window.addEventListener('keydown', (event) => {
   const normalizedKey = normalizeKey(event.key);
@@ -711,48 +689,6 @@ canvas.addEventListener('touchmove', (e) => {
 
 canvas.addEventListener('touchend', () => { isTouching = false; });
 
-// Sensor Orientation
-function onOrientation(e) {
-  tiltGamma = e.gamma || 0;
-  tiltBeta  = e.beta  || 0;
-}
-
-function initSensors() {
-  sensorsOk = false;
-
-  if (!window.isSecureContext) {
-    updateControlHint();
-    return;
-  }
-
-  if (typeof DeviceOrientationEvent === 'undefined') {
-    console.warn('API DeviceOrientation não suportada.');
-    updateControlHint();
-    return;
-  }
-  
-  // iOS 13+ requer permissão explícita
-  if (typeof DeviceOrientationEvent.requestPermission === 'function') {
-    DeviceOrientationEvent.requestPermission()
-      .then(resp => {
-        if (resp === 'granted') {
-          window.addEventListener('deviceorientation', onOrientation);
-          sensorsOk = true;
-        }
-        updateControlHint();
-      })
-      .catch(err => {
-        console.error(err);
-        updateControlHint();
-      });
-  } else {
-    // Android / Desktop
-    window.addEventListener('deviceorientation', onOrientation);
-    sensorsOk = true;
-    updateControlHint();
-  }
-}
-
 function startGame(event) {
   if (event) {
     event.preventDefault();
@@ -764,7 +700,6 @@ function startGame(event) {
 
   hasGameStarted = true;
   canvas.style.pointerEvents = 'auto';
-  initSensors();
   startOverlay.classList.add('hidden');
   startLevel();
 
@@ -784,7 +719,7 @@ function restartLevel() {
   startLevel();
 }
 
-// Game Loop (para teclado e sensores)
+// Game Loop (para teclado)
 function gameLoop() {
   if (gameActive) {
     currentLevelTime = (Date.now() - startTime) / 1000;
@@ -792,11 +727,6 @@ function gameLoop() {
 
     if (keyboardDirection.dx || keyboardDirection.dy) {
       movePlayer(keyboardDirection.dx, keyboardDirection.dy);
-    } else if (sensorsOk) {
-      const tiltDirection = getTiltDirection();
-      if (tiltDirection.dx || tiltDirection.dy) {
-        movePlayer(tiltDirection.dx, tiltDirection.dy, { showCollisionFeedback: false });
-      }
     }
   }
 
