@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="pt">
+<html lang="pt-PT">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, maximum-scale=1.0" />
@@ -8,6 +8,7 @@
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body {
       width: 100%; height: 100%;
+      min-height: 100svh;
       overflow: hidden;
       background: #1a252f;
       font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -52,7 +53,7 @@
     .hud-btn:active { transform: scale(.97); }
 
     /* ── Canvas ── */
-    #gameCanvas { display: block; position: absolute; top: 0; left: 0; pointer-events: none; }
+    #gameCanvas { display: block; position: fixed; inset: 0; pointer-events: none; }
 
     /* ── Overlays ── */
     .overlay {
@@ -150,18 +151,18 @@
 
 <div id="startOverlay" class="overlay">
   <h1>🚛 Transportes Figueiredo</h1>
-  <p>Arrasta o dedo no ecrã para guiar o camião até ao galpão.</p>
-  <button class="btn" id="startBtn" type="button">🎮 COMEÇAR ENTREGA</button>
+  <p>Arrasta o dedo no ecrã para levar o camião até ao armazém.</p>
+  <button class="btn" id="startBtn" type="button">🎮 INICIAR ENTREGA</button>
 </div>
 
 <div id="missionOverlay" class="overlay hidden">
   <h1>✅ Missão Cumprida!</h1>
   <div class="mission-score" id="missionPts">+100</div>
   <div class="mission-bonus" id="missionBonus">Bónus de tempo: +50</div>
-  <button class="btn" id="nextBtn" type="button">Próximo Nível ➜</button>
+  <button class="btn" id="nextBtn" type="button">Nível Seguinte ➜</button>
 </div>
 
-<div id="controlHint">Desktop: ⬆⬇⬅➜ | Mobile: Swipe</div>
+<div id="controlHint">Computador: ⬆⬇⬅➜ | Telemóvel: arrastar</div>
 
 <script>
 /* ═══════════════════════════════════════════════════════
@@ -180,6 +181,7 @@ const BASE_MOVE_DELAY = 110;
 const MIN_MOVE_DELAY  = 72;
 const MOVE_DELAY_STEP = 4;
 const MOBILE_MIN_CELL = 26;
+const MOBILE_TOP_PADDING = 18;
 const COLLISION_FLASH_MS = 140;
 const BEST_SCORE_KEY = 'transportes-figueiredo-best-score';
 const CONTROL_KEYS = new Set(['arrowup', 'arrowdown', 'arrowleft', 'arrowright', 'w', 'a', 's', 'd']);
@@ -234,7 +236,7 @@ function loadBestScore() {
   try {
     return Number(localStorage.getItem(BEST_SCORE_KEY) || 0);
   } catch (error) {
-    console.warn('Não foi possível ler o recorde.', error);
+    console.warn('Não foi possível ler a melhor pontuação.', error);
     return 0;
   }
 }
@@ -244,7 +246,7 @@ function saveBestScore() {
   try {
     localStorage.setItem(BEST_SCORE_KEY, String(bestScore));
   } catch (error) {
-    console.warn('Não foi possível guardar o recorde.', error);
+    console.warn('Não foi possível guardar a melhor pontuação.', error);
   }
 }
 
@@ -264,22 +266,59 @@ function updateHud() {
 }
 
 function isTouchDevice() {
-  return window.matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
+  return (
+    (typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches) ||
+    'ontouchstart' in window ||
+    navigator.maxTouchPoints > 0
+  );
 }
 
 function updateControlHint() {
   controlHint.textContent = isTouchDevice()
-    ? 'Arraste o dedo para mover · ↻ reinicia o nível'
-    : 'Use as setas ou WASD · R reinicia';
+    ? 'Arrasta o dedo para mover o camião · ↻ reinicia o nível'
+    : 'Usa as setas ou WASD · R reinicia';
+}
+
+function getViewportSize() {
+  const viewport = window.visualViewport;
+
+  return {
+    width: Math.round(viewport?.width || window.innerWidth),
+    height: Math.round(viewport?.height || window.innerHeight)
+  };
+}
+
+function getHudHeight() {
+  return document.getElementById('hud').getBoundingClientRect().height || 46;
+}
+
+function getMazeOffsets() {
+  const { width, height } = getViewportSize();
+  const hudH = getHudHeight();
+  const availableHeight = Math.max(0, height - hudH);
+  const mazeWidth = cols * cellW;
+  const mazeHeight = rows * cellH;
+  const freeVerticalSpace = Math.max(0, availableHeight - mazeHeight);
+  const topPadding = isTouchDevice()
+    ? Math.min(MOBILE_TOP_PADDING, freeVerticalSpace)
+    : freeVerticalSpace / 2;
+
+  return {
+    width,
+    height,
+    offsetX: Math.max(0, (width - mazeWidth) / 2),
+    offsetY: hudH + topPadding
+  };
 }
 
 function getLevelGridSize(currentLevel) {
   const desiredCols = 12 + (currentLevel - 1) * 2;
   const desiredRows = 10 + (currentLevel - 1) * 2;
-  const hudH = document.getElementById('hud').getBoundingClientRect().height || 46;
-  const minCellSize = window.innerWidth <= 480 ? MOBILE_MIN_CELL : 24;
-  const maxCols = Math.max(8, Math.floor(window.innerWidth / minCellSize));
-  const maxRows = Math.max(8, Math.floor((window.innerHeight - hudH) / minCellSize));
+  const { width, height } = getViewportSize();
+  const hudH = getHudHeight();
+  const minCellSize = width <= 480 ? MOBILE_MIN_CELL : 24;
+  const maxCols = Math.max(8, Math.floor(width / minCellSize));
+  const maxRows = Math.max(8, Math.floor((height - hudH) / minCellSize));
 
   return {
     cols: Math.min(desiredCols, maxCols),
@@ -334,17 +373,18 @@ function generateMaze(r, c) {
 //  CANVAS & RESIZE
 // ═══════════════════════════════════════════════════════
 function resizeCanvas() {
+  const { width, height } = getViewportSize();
   const dpr = window.devicePixelRatio || 1;
-  canvas.width  = window.innerWidth * dpr;
-  canvas.height = window.innerHeight * dpr;
-  canvas.style.width  = `${window.innerWidth}px`;
-  canvas.style.height = `${window.innerHeight}px`;
+  canvas.width  = width * dpr;
+  canvas.height = height * dpr;
+  canvas.style.width  = `${width}px`;
+  canvas.style.height = `${height}px`;
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.scale(dpr, dpr);
 
-  const hudH = document.getElementById('hud').getBoundingClientRect().height || 46;
-  const availW = window.innerWidth;
-  const availH = window.innerHeight - hudH;
+  const hudH = getHudHeight();
+  const availW = width;
+  const availH = Math.max(0, height - hudH);
   cellW = Math.floor(availW / cols);
   cellH = Math.floor(availH / rows);
   const cellSize = Math.min(cellW, cellH);
@@ -355,8 +395,7 @@ function resizeCanvas() {
 //  DRAWING
 // ═══════════════════════════════════════════════════════
 function drawMaze() {
-  const w = window.innerWidth;
-  const h = window.innerHeight;
+  const { width: w, height: h, offsetX, offsetY } = getMazeOffsets();
   const hitActive = Date.now() < collisionFlashUntil;
   ctx.fillStyle = hitActive ? '#314551' : BG_COLOR;
   ctx.fillRect(0, 0, w, h);
@@ -364,10 +403,6 @@ function drawMaze() {
   if (!maze.length || !maze[0] || maze.length !== rows || maze[0].length !== cols) {
     return;
   }
-
-  const offsetX = (w - cols * cellW) / 2;
-  const hudH = document.getElementById('hud').getBoundingClientRect().height || 46;
-  const offsetY = hudH + (h - hudH - rows * cellH) / 2;
 
   ctx.save();
   ctx.translate(offsetX, offsetY);
@@ -634,7 +669,7 @@ function checkGoal() {
     const totalPts  = currentBasePoints + timeBonus;
     score += totalPts;
     missionPts.textContent   = '+' + totalPts;
-    missionBonus.textContent = `Tempo: ${elapsed.toFixed(1)}s / alvo ${currentParTime}s · bónus +${timeBonus}`;
+    missionBonus.textContent = `Tempo: ${elapsed.toFixed(1)}s / objetivo ${currentParTime}s · bónus +${timeBonus}`;
     syncBestScore();
     missionRevealTimeout = window.setTimeout(() => missionOverlay.classList.remove('hidden'), 250);
   }
@@ -785,7 +820,19 @@ window.addEventListener('keydown', (event) => {
 });
 
 nextBtn.addEventListener('click', () => { level++; startLevel(); });
-window.addEventListener('resize', () => { resizeCanvas(); drawMaze(); });
+
+function handleViewportChange() {
+  resizeCanvas();
+  drawMaze();
+}
+
+window.addEventListener('resize', handleViewportChange);
+window.addEventListener('orientationchange', handleViewportChange);
+
+if (window.visualViewport) {
+  window.visualViewport.addEventListener('resize', handleViewportChange);
+  window.visualViewport.addEventListener('scroll', handleViewportChange);
+}
 
 // Init
 resizeCanvas();
